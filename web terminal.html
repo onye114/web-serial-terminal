@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Web Serial Terminal</title>
+    <!-- Include Chart.js via CDN for the live graphing feature -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        h1 { margin-bottom: 15px; font-size: 1.5rem; color: #00adb5; }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 15px;
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            flex-wrap: wrap;
+        }
+        label { font-size: 0.9rem; color: #b3b3b3; }
+        select, button, input {
+            padding: 10px 15px;
+            border-radius: 5px;
+            border: none;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        select, input { background: #333; color: #fff; }
+        input { flex-grow: 1; border: 1px solid #444; }
+        input:focus { border-color: #00adb5; }
+        
+        button {
+            color: #fff;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-primary { background: #00adb5; }
+        .btn-primary:hover { background: #008087; }
+        .btn-secondary { background: #ff5722; }
+        .btn-secondary:hover { background: #e0481d; }
+        .btn-premium { background: #ffb703; color: #023047; }
+        .btn-premium:hover { background: #fb8500; }
+        button:disabled { background: #444; cursor: not-allowed; color: #777; }
+
+        /* Two-column layout: Left for text console, Right for Pro Graph */
+        .main-container {
+            display: flex;
+            gap: 20px;
+            flex-grow: 1;
+            min-height: 0; /* Prevents flex items from bursting container bounds */
+        }
+        
+        .panel-left {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .panel-right {
+            flex: 1;
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #333;
+        }
+        
+        #terminal {
+            flex-grow: 1;
+            background: #000;
+            color: #00ff66;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            border: 1px solid #333;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .chart-container {
+            position: relative;
+            flex-grow: 1;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>⚡ Pro Web Serial Terminal & Visualizer</h1>
+
+    <!-- Global Connection Controls -->
+    <div class="controls">
+        <div>
+            <label for="baud">Baud Rate: </label>
+            <select id="baud">
+                <option value="9600">9600</option>
+                <option value="115200" selected>115200</option>
+            </select>
+        </div>
+        <button id="connectBtn" class="btn-primary">Connect Hardware</button>
+        <button id="simBtn" class="btn-secondary">Start Simulation Mode</button>
+    </div>
+    <!-- Workspace Layout -->
+    <div class="main-container">
+        
+        <!-- Left Side: Terminal Console & Command Input -->
+        <div class="panel-left">
+            <div id="terminal">[System Ready] Click a mode above to begin...&#10;</div>
+            
+            <div class="input-group">
+                <input type="text" id="cmdInput" placeholder="Type command to send to microcontroller (e.g., TURN_LED_ON)..." disabled>
+                <button id="sendBtn" class="btn-primary" disabled>Send</button>
+            </div>
+        </div>
+
+        <!-- Right Side: The Premium Analytics Graph -->
+        <div class="panel-right">
+            <div class="chart-header">
+                <h3>📈 Real-Time Data Graph (Pro Feature)</h3>
+                <button class="btn-premium" onclick="alert('Monetization Hook: Integrate Stripe here to unlock CSV exports!')">👑 Export CSV Data</button>
+            </div>
+            <div class="chart-container">
+                <canvas id="dataChart"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const connectBtn = document.getElementById('connectBtn');
+        const simBtn = document.getElementById('simBtn');
+        const terminal = document.getElementById('terminal');
+        const baudSelect = document.getElementById('baud');
+        const cmdInput = document.getElementById('cmdInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        let port;
+        let reader;
+        let outputStream;
+        let simInterval;
+        let chart;
+        let dataIndex = 0;
+
+        // Initialize Chart.js configuration
+        function initChart() {
+            const ctx = document.getElementById('dataChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Temperature (°C)',
+                        data: [],
+                        borderColor: '#00adb5',
+                        backgroundColor: 'rgba(0, 173, 181, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { color: '#333' }, ticks: { color: '#aaa' } },
+                        y: { grid: { color: '#333' }, ticks: { color: '#aaa' }, min: 15, max: 35 }
+                    },
+                    plugins: { legend: { labels: { color: '#fff' } } }
+                }
+            });
+        }
+
+        // Helper to update the chart dynamically
+        function updateChart(newValue) {
+            if (!chart) return;
+            
+            // Keep maximum of 15 data points visible on the screen to avoid clutter
+            if (chart.data.labels.length > 15) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+
+            chart.data.labels.push(dataIndex++ + "s");
+            chart.data.datasets[0].data.push(newValue);
+            chart.update();
+        }
+
+        function appendToTerminal(text) {
+            terminal.innerText += text;
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        // --- REAL HARDWARE CONNECTION ---
+        connectBtn.addEventListener('click', async () => {
+            if (!('serial' in navigator)) {
+                alert('Web Serial API not supported in this browser. Try Chrome or Edge.');
+                return;
+            }
+            try {
+                port = await navigator.serial.requestPort();
+                const baudRate = parseInt(baudSelect.value);
+                await port.open({ baudRate: baudRate });
+                
+                connectBtn.textContent = "Connected ✔";
+                connectBtn.style.background = "#28a745";
+                connectBtn.disabled = true;
+                simBtn.disabled = true;
+                cmdInput.disabled = false;
+                sendBtn.disabled = false;
+                
+                terminal.innerText = "[Connected to Hardware]\n";
+                
+                initChart();
+                readSerialData();
+            } catch (error) {
+                console.error(error);
+                terminal.innerText += `\n[Error: ${error.message}]\n`;
+            }
+        });
+
+        async function readSerialData() {
+            const textDecoder = new TextDecoderStream();
+            port.readable.pipeTo(textDecoder.writable);
+            reader = textDecoder.readable.getReader();
+            
+            // Set up string buffer to parse complete incoming lines
+            let inputBuffer = "";
+
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                        appendToTerminal(value);
+                        
+                        // Parse numbers out of incoming strings for the graph
+                        inputBuffer += value;
+                        if (inputBuffer.includes('\n')) {
+                            // Simple Regex parsing: Looks for any floating point number or digit in the line
+                            const match = inputBuffer.match(/[-+]?[0-9]*\.?[0-9]+/);
+                            if (match) {
+                                updateChart(parseFloat(match[0]));
+                            }
+                            inputBuffer = ""; // Reset buffer
+                        }
+                    }
+                }
+            } catch (error) {
+                terminal.innerText += `\n[Read Error: ${error.message}]\n`;
+            } finally {
+                if (reader) {
+                    try {
+                        reader.releaseLock();
+                    } catch (e) {
+                        console.error('Error releasing reader lock', e);
+                    }
+                }
+            }
+        }
+
+        // Write commands back to hardware
+        async function sendSerialCommand(text) {
+            if (!port || !port.writable) return;
+            const encoder = new TextEncoder();
+            const writer = port.writable.getWriter();
+            await writer.write(encoder.encode(text + '\n')); // Append newline delimiter
+            writer.releaseLock();
+            appendToTerminal(`\n[SENT]: ${text}\n`);
+        }
+
+        sendBtn.addEventListener('click', () => {
+            if(cmdInput.value.trim() !== "") {
+                if (simInterval) {
+                    appendToTerminal(`\n[SIM SENT]: ${cmdInput.value}\n`);
+                } else {
+                    sendSerialCommand(cmdInput.value);
+                }
+                cmdInput.value = "";
+            }
+        });
+
+        // Allow sending command by pressing Enter key
+        cmdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendBtn.click();
+        });
+
+
+        // --- SIMULATION MODE ---
+        simBtn.addEventListener('click', () => {
+            if (simInterval) {
+                clearInterval(simInterval);
+                simInterval = null;
+                simBtn.textContent = "Start Simulation Mode";
+                simBtn.classList.remove('btn-primary');
+                simBtn.classList.add('btn-secondary');
+                connectBtn.disabled = false;
+                cmdInput.disabled = true;
+                sendBtn.disabled = true;
+                appendToTerminal("\n[Simulation Stopped]\n");
+            } else {
+                simBtn.textContent = "Stop Simulation";
+                simBtn.classList.remove('btn-secondary');
+                simBtn.classList.add('btn-primary');
+                connectBtn.disabled = true;
+                cmdInput.disabled = false;
+                sendBtn.disabled = false;
+                
+                terminal.innerText = "[Simulation Active]\n";
+                
+                initChart();
+                simInterval = setInterval(() => {
+                    const fakeTemp = (22 + Math.random() * 4).toFixed(1);
+                    const fakeHumidity = Math.floor(45 + Math.random() * 10);
+                    
+                    // Emulate standard microcontroller print format
+                    appendToTerminal(`TEMP: ${fakeTemp}C | HUMIDITY: ${fakeHumidity}%\n`);
+                    
+                    // Feed the temperature number straight into the live graphing engine
+                    updateChart(parseFloat(fakeTemp));
+                }, 1000);
+            }
+        });
+    </script>
+</body>
+</html>
